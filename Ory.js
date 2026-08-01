@@ -197,12 +197,16 @@
             this.suxModel = new Sux();
             this.suxModel.train("hello how are you I am a simple ai model that learns from example text i can predict the next words and return a response based on a prompt");
 
-            // v2.3 New Tracking Systems
+            // Tracking Systems
             this.maxMessagesPerWindow = 0; // 0 = unlimited
             this.messageWindowMs = 2 * 60 * 60 * 1000; // Exactly 2 Hours
             this.messageTimestamps = [];
             this.totalMessagesSent = 0;
             this.responseDelayMs = 0;
+
+            // v2.31 New Features
+            this.currentResponseText = '';
+            this.roleplayStrictness = 1.0; // 0.0 = relaxed persona, 2.0 = ultra strict roleplay
 
             // Utilities State
             this.lastGeneratedImageUrl = '';
@@ -241,10 +245,20 @@
             }
         }
 
+        _buildSystemPrompt(bot) {
+            let basePrompt = bot.systemPrompt;
+            if (this.roleplayStrictness > 1.2) {
+                basePrompt += ` [CRITICAL ROLEPLAY RULE: Stay strictly in character at all costs. Never break character or refer to yourself as an AI.]`;
+            } else if (this.roleplayStrictness < 0.5) {
+                basePrompt += ` [ROLEPLAY RULE: You may break character slightly if requested or if necessary to assist the user.]`;
+            }
+            return basePrompt;
+        }
+
         getInfo() {
             return {
                 id: 'oreAI',
-                name: 'OreAI v2.3',
+                name: 'OreAI v2.31',
                 color1: '#7b2cbf',
                 color2: '#5a189a',
                 color3: '#3c096c',
@@ -329,9 +343,9 @@
                         text: 'all active chatbot names'
                     },
 
-                    // --- 🎭 PERSONALITY MANAGEMENT ---
+                    // --- 🎭 PERSONALITY & ROLEPLAY MANAGEMENT ---
                     '---',
-                    '🎭 Personality Management',
+                    '🎭 Personality & Roleplay',
                     {
                         opcode: 'setSystemPrompt',
                         blockType: Scratch.BlockType.COMMAND,
@@ -343,6 +357,12 @@
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'apply personality preset [PRESET] to current chatbot',
                         arguments: { PRESET: { type: Scratch.ArgumentType.STRING, menu: 'personalityPresets', defaultValue: 'Friendly NPC' } }
+                    },
+                    {
+                        opcode: 'setRoleplayParameter',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'set roleplay strictness parameter to [STRICTNESS]',
+                        arguments: { STRICTNESS: { type: Scratch.ArgumentType.NUMBER, defaultValue: 1.0 } }
                     },
                     {
                         opcode: 'isUsingPersonalityPreset',
@@ -369,6 +389,11 @@
                         blockType: Scratch.BlockType.REPORTER,
                         text: 'chat with selected bot memory [PROMPT]',
                         arguments: { PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'What items do you sell?' } }
+                    },
+                    {
+                        opcode: 'getCurrentResponseText',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'ai current response text'
                     },
                     {
                         opcode: 'getMemoryStorage',
@@ -561,10 +586,15 @@
             bot.isPreset = true;
         }
 
+        setRoleplayParameter(args) {
+            this.roleplayStrictness = Math.max(0, Math.min(2, Scratch.Cast.toNumber(args.STRICTNESS)));
+        }
+
         isUsingPersonalityPreset() { return this._getCurrentBot().isPreset; }
         getSystemPrompt() { return this._getCurrentBot().systemPrompt; }
 
         // --- 💬 MEMORY IMPLEMENTATION ---
+        getCurrentResponseText() { return this.currentResponseText; }
         getMemoryStorage() { return JSON.stringify(this._getCurrentBot().chatHistory); }
         getMemoryCount() { return this._getCurrentBot().chatHistory.length; }
         clearChatHistory() { this._getCurrentBot().chatHistory = []; }
@@ -586,7 +616,9 @@
         suxRespond(args) {
             const prompt = Scratch.Cast.toString(args.PROMPT);
             const max = Scratch.Cast.toNumber(args.MAX);
-            return this.suxModel.respond(prompt, max);
+            const text = this.suxModel.respond(prompt, max);
+            this.currentResponseText = text;
+            return text;
         }
 
         suxDescribe() { return this.suxModel.describeArchitecture(); }
@@ -630,6 +662,9 @@
                     responseText = await this._callOpenAI(userPrompt, useMemory, bot);
                 }
 
+                // Store in response state reporter
+                this.currentResponseText = responseText;
+
                 if (useMemory) {
                     bot.chatHistory.push({ role: 'user', content: userPrompt });
                     bot.chatHistory.push({ role: 'assistant', content: responseText });
@@ -654,7 +689,8 @@
 
         async _callOpenAI(prompt, useMemory, bot) {
             const url = 'https://api.openai.com/v1/chat/completions';
-            let messages = [{ role: 'system', content: bot.systemPrompt }];
+            const sysPrompt = this._buildSystemPrompt(bot);
+            let messages = [{ role: 'system', content: sysPrompt }];
             if (useMemory) messages = messages.concat(bot.chatHistory);
             messages.push({ role: 'user', content: prompt });
 
@@ -670,7 +706,8 @@
 
         async _callOpenRouter(prompt, useMemory, bot) {
             const url = 'https://openrouter.ai/api/v1/chat/completions';
-            let messages = [{ role: 'system', content: bot.systemPrompt }];
+            const sysPrompt = this._buildSystemPrompt(bot);
+            let messages = [{ role: 'system', content: sysPrompt }];
             if (useMemory) messages = messages.concat(bot.chatHistory);
             messages.push({ role: 'user', content: prompt });
 
@@ -692,6 +729,7 @@
         async _callGemini(prompt, useMemory, bot) {
             const endpointModel = this.model.includes('gemini') ? this.model : 'gemini-3.5-flash';
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${endpointModel}:generateContent?key=${this.apiKey}`;
+            const sysPrompt = this._buildSystemPrompt(bot);
 
             let contents = [];
             if (useMemory) {
@@ -706,7 +744,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    systemInstruction: { parts: [{ text: bot.systemPrompt }] },
+                    systemInstruction: { parts: [{ text: sysPrompt }] },
                     generationConfig: { temperature: this.temperature },
                     contents
                 })
