@@ -6,7 +6,7 @@ A Turbowarp/Penguinmod extension
 
 ## Features
 
-- **New Models:** OreAI supports gemini-3.5-flash, gemini-3.1-flash-lite, gpt-5.4-mini and gpt-5.4 models.
+- **New Models:** OreAI supports gemini-3.5-flash, gemini-3.1-flash-lite, gpt-5.4-mini and gpt-5.4 models and etc.
 
 - **Your Model:** You can use any model you want with the set custom model ID block.
 
