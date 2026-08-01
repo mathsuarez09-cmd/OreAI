@@ -5,409 +5,480 @@
         throw new Error('OreAI must be run unsandboxed to perform network requests.');
     }
 
+    // ==========================================
+    // 🧠 Sux Class (Legacy / Made by me)
+    // ==========================================
+    class Sux {
+        constructor(embeddingDim = 16, numLayers = 2, numHeads = 2) {
+            this.tokenToId = new Map();
+            this.idToToken = new Map();
+            this.bigramCounts = new Map();
+            this.embeddingDim = embeddingDim;
+            this.numLayers = numLayers;
+            this.numHeads = numHeads;
+            this.embeddings = new Map();
+            this.parameters = {};
+            this.layerNames = ["embedding", "self_attention", "feed_forward", "output"];
+            this.postTrainingHistory = [];
+            this.instructionTuningExamples = [];
+            this.seed = 42;
+        }
+
+        _random() {
+            let x = Math.sin(this.seed++) * 10000;
+            return x - Math.floor(x);
+        }
+
+        _randomEmbedding() {
+            let vector = [];
+            for (let i = 0; i < this.embeddingDim; i++) {
+                vector.push((this._random() * 0.2) - 0.1);
+            }
+            return vector;
+        }
+
+        tokenize(text) {
+            const tokens = text.trim().split(/\s+/).filter(t => t.length > 0);
+            const tokenIds = [];
+            for (const token of tokens) {
+                if (!this.tokenToId.has(token)) {
+                    const idx = this.tokenToId.size;
+                    this.tokenToId.set(token, idx);
+                    this.idToToken.set(idx, token);
+                    this.embeddings.set(idx, this._randomEmbedding());
+                }
+                tokenIds.push(this.tokenToId.get(token));
+            }
+            this._refreshParameters();
+            return tokenIds;
+        }
+
+        detokenize(tokenIds) {
+            return tokenIds.map(t => this.idToToken.get(t) || "").join(" ").trim();
+        }
+
+        _refreshParameters() {
+            const tokenEmbeddingParams = this.embeddings.size * this.embeddingDim;
+            const attentionParams = this.embeddingDim * this.embeddingDim * this.numHeads;
+            const feedForwardParams = this.embeddingDim * this.embeddingDim;
+            const outputParams = Math.max(this.tokenToId.size, 1) * this.embeddingDim;
+            this.parameters = {
+                embedding: tokenEmbeddingParams,
+                self_attention: attentionParams,
+                feed_forward: feedForwardParams,
+                output: outputParams,
+                total: tokenEmbeddingParams + attentionParams + feedForwardParams + outputParams
+            };
+        }
+
+        _embeddingFor(tokenId) {
+            return this.embeddings.get(tokenId) || new Array(this.embeddingDim).fill(0.0);
+        }
+
+        selfAttention(tokenIds) {
+            if (!tokenIds.length) return new Array(this.embeddingDim).fill(0.0);
+            const vectors = tokenIds.map(id => this._embeddingFor(id));
+            const context = [];
+            for (let dim = 0; dim < this.embeddingDim; dim++) {
+                let total = 0.0;
+                vectors.forEach((vector, index) => {
+                    total += vector[dim] * (index + 1);
+                });
+                context.push(total / Math.max(vectors.length, 1));
+            }
+            return context;
+        }
+
+        transformerBlock(tokenIds) {
+            const attentionOutput = this.selfAttention(tokenIds);
+            return attentionOutput.map((val, index) => val + (index + 1) * 0.01);
+        }
+
+        deepNeuralNetworkLayers(tokenIds) {
+            return {
+                embedding: tokenIds.map(id => this._embeddingFor(id)),
+                self_attention: this.selfAttention(tokenIds),
+                transformer: this.transformerBlock(tokenIds),
+                layers: this.layerNames
+            };
+        }
+
+        train(corpus) {
+            this.tokenToId.clear();
+            this.idToToken.clear();
+            this.bigramCounts.clear();
+            this.embeddings.clear();
+            this.seed = 42;
+
+            const tokens = this.tokenize(corpus);
+            for (let i = 0; i < tokens.length - 1; i++) {
+                const currentId = tokens[i];
+                const nextId = tokens[i + 1];
+                if (!this.bigramCounts.has(currentId)) {
+                    this.bigramCounts.set(currentId, new Map());
+                }
+                const nextCounts = this.bigramCounts.get(currentId);
+                nextCounts.set(nextId, (nextCounts.get(nextId) || 0) + 1);
+            }
+        }
+
+        predictNextToken(currentTokenId) {
+            const nextCounts = this.bigramCounts.get(currentTokenId);
+            if (!nextCounts || nextCounts.size === 0) return null;
+
+            let total = 0;
+            for (let count of nextCounts.values()) total += count;
+
+            const choice = Math.floor(Math.random() * total) + 1;
+            let cumulative = 0;
+            for (let [tokenId, count] of nextCounts.entries()) {
+                cumulative += count;
+                if (choice <= cumulative) return tokenId;
+            }
+            return null;
+        }
+
+        postTraining(corpus) {
+            this.train(corpus);
+            this.postTrainingHistory.push(corpus.slice(0, 80));
+            return `post-training completed with ${this.tokenToId.size} tokens`;
+        }
+
+        instructionTuning(examples) {
+            this.instructionTuningExamples.push(...examples);
+            return `instruction tuning completed with ${examples.length} examples`;
+        }
+
+        describeArchitecture() {
+            return JSON.stringify({
+                embedding: `${this.embeddings.size} tokens with dimension ${this.embeddingDim}`,
+                transformer: `${this.numLayers} layers and ${this.numHeads} heads`,
+                self_attention: "enabled",
+                deep_neural_network_layers: this.layerNames,
+                parameters: this.parameters
+            });
+        }
+
+        respond(prompt, maxLength = 20) {
+            const promptIds = this.tokenize(prompt);
+            if (!promptIds.length) return "";
+
+            this.deepNeuralNetworkLayers(promptIds);
+
+            const responseIds = [];
+            let currentId = promptIds[promptIds.length - 1];
+            for (let i = 0; i < maxLength; i++) {
+                const nextId = this.predictNextToken(currentId);
+                if (nextId === null) break;
+                responseIds.push(nextId);
+                currentId = nextId;
+            }
+            return this.detokenize(responseIds);
+        }
+    }
+
+    // ==========================================
+    // 🚀 OreAI Extension Main Class
+    // ==========================================
     class OreAI {
         constructor() {
-            // Configuration State
+            // Global Settings
             this.apiKey = '';
             this.provider = 'Google Gemini';
             this.model = 'gemini-3.5-flash';
-            this.systemPrompt = 'You are a helpful AI assistant integrated into a Scratch project.';
             this.temperature = 0.7;
-            this.maxTokens = 500;
 
-            // Chat Memory State
-            this.chatHistory = [];
-            this.chatMemoryLimit = 10;
+            // Multi-Chatbot System
+            this.chatbots = new Map();
+            this.currentChatbotId = 'Default';
+            this._createChatbot('Default', 'You are a helpful AI assistant.');
 
-            // Image Generation State
+            // Sux Engine Setup (Legacy / Made by me)
+            this.suxModel = new Sux();
+            this.suxModel.train("hello how are you I am a simple ai model that learns from example text i can predict the next words and return a response based on a prompt");
+
+            // Utilities State
             this.lastGeneratedImageUrl = '';
-
-            // Debug & Status
             this.lastError = '';
-            this.lastResponseTimeMs = 0;
+            this.lastLatency = 0;
             this.status = 'Idle';
+        }
+
+        _createChatbot(name, systemPrompt) {
+            this.chatbots.set(name, {
+                systemPrompt: systemPrompt || 'You are a helpful assistant.',
+                chatHistory: [],
+                memoryLimit: 10
+            });
+        }
+
+        _getCurrentBot() {
+            if (!this.chatbots.has(this.currentChatbotId)) {
+                this._createChatbot(this.currentChatbotId, 'You are a helpful assistant.');
+            }
+            return this.chatbots.get(this.currentChatbotId);
         }
 
         getInfo() {
             return {
                 id: 'oreAI',
-                name: 'OreAI v2.0',
+                name: 'OreAI v2.2',
                 color1: '#7b2cbf',
                 color2: '#5a189a',
                 color3: '#3c096c',
                 blocks: [
-                    // --- ⚙️ CATEGORY 1: CONFIGURATION MANAGEMENT ---
+                    // --- ⚙️ CONFIGURATION MANAGEMENT ---
                     '---',
-                    '⚙️ Configuration Management',
+                    '⚙️ Configuration & Models',
                     {
                         opcode: 'setApiKey',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'set API key to [KEY]',
-                        arguments: {
-                            KEY: { type: Scratch.ArgumentType.STRING, defaultValue: 'AIzaSy...' }
-                        }
+                        arguments: { KEY: { type: Scratch.ArgumentType.STRING, defaultValue: 'sk-...' } }
                     },
                     {
                         opcode: 'setProvider',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'set AI provider to [PROVIDER]',
-                        arguments: {
-                            PROVIDER: { type: Scratch.ArgumentType.STRING, menu: 'providers', defaultValue: 'Google Gemini' }
-                        }
+                        arguments: { PROVIDER: { type: Scratch.ArgumentType.STRING, menu: 'providers', defaultValue: 'Google Gemini' } }
                     },
                     {
                         opcode: 'setModel',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'set model to [MODEL]',
-                        arguments: {
-                            MODEL: { type: Scratch.ArgumentType.STRING, menu: 'models', defaultValue: 'gemini-3.5-flash' }
-                        }
+                        arguments: { MODEL: { type: Scratch.ArgumentType.STRING, menu: 'models', defaultValue: 'gemini-3.5-flash' } }
                     },
                     {
                         opcode: 'setCustomModel',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'set custom model ID to [MODEL_ID]',
-                        arguments: {
-                            MODEL_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'gemini-3.5-flash' }
-                        }
+                        arguments: { MODEL_ID: { type: Scratch.ArgumentType.STRING, defaultValue: 'deepseek-v4-pro' } }
+                    },
+                    {
+                        opcode: 'getCurrentModel',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'current model ID'
                     },
                     {
                         opcode: 'setTemperature',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'set creativity (temperature) to [TEMP]',
+                        arguments: { TEMP: { type: Scratch.ArgumentType.NUMBER, defaultValue: 0.7 } }
+                    },
+
+                    // --- 🤖 MULTI-CHATBOT MANAGEMENT ---
+                    '---',
+                    '🤖 Multi-Chatbot Management',
+                    {
+                        opcode: 'createChatbot',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'create chatbot [NAME] with system prompt [PROMPT]',
                         arguments: {
-                            TEMP: { type: Scratch.ArgumentType.NUMBER, defaultValue: 0.7 }
+                            NAME: { type: Scratch.ArgumentType.STRING, defaultValue: 'Shopkeeper' },
+                            PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'You are a merchant selling potions.' }
                         }
                     },
                     {
-                        opcode: 'setMaxTokens',
+                        opcode: 'selectChatbot',
                         blockType: Scratch.BlockType.COMMAND,
-                        text: 'set max response tokens to [TOKENS]',
-                        arguments: {
-                            TOKENS: { type: Scratch.ArgumentType.NUMBER, defaultValue: 500 }
-                        }
+                        text: 'select chatbot [NAME]',
+                        arguments: { NAME: { type: Scratch.ArgumentType.STRING, defaultValue: 'Shopkeeper' } }
+                    },
+                    {
+                        opcode: 'deleteChatbot',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'delete chatbot [NAME]',
+                        arguments: { NAME: { type: Scratch.ArgumentType.STRING, defaultValue: 'Shopkeeper' } }
+                    },
+                    {
+                        opcode: 'getCurrentChatbotName',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'current chatbot name'
+                    },
+                    {
+                        opcode: 'getChatbotList',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'all active chatbot names'
                     },
 
-                    // --- 🎭 CATEGORY 2: PERSONALITY MANAGEMENT ---
+                    // --- 🎭 PERSONALITY MANAGEMENT ---
                     '---',
                     '🎭 Personality Management',
                     {
                         opcode: 'setSystemPrompt',
                         blockType: Scratch.BlockType.COMMAND,
-                        text: 'set custom system prompt to [PROMPT]',
-                        arguments: {
-                            PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'You are a helpful assistant.' }
-                        }
-                    },
-                    {
-                        opcode: 'setPersonalityPreset',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'apply personality preset [PRESET]',
-                        arguments: {
-                            PRESET: { type: Scratch.ArgumentType.STRING, menu: 'personalityPresets', defaultValue: 'Friendly NPC' }
-                        }
+                        text: 'set system prompt for current chatbot to [PROMPT]',
+                        arguments: { PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'You are a helpful assistant.' } }
                     },
                     {
                         opcode: 'getSystemPrompt',
                         blockType: Scratch.BlockType.REPORTER,
-                        text: 'current system prompt',
-                        disableMonitor: true
+                        text: 'current chatbot system prompt'
                     },
 
-                    // --- 💬 CATEGORY 3: CHATBOT MANAGEMENT ---
+                    // --- 💬 CHAT & GENERATION ---
                     '---',
-                    '💬 Chatbot Management',
+                    '💬 Chat & Interaction',
                     {
                         opcode: 'generateResponse',
                         blockType: Scratch.BlockType.REPORTER,
                         text: 'prompt AI [PROMPT]',
-                        arguments: {
-                            PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'Hello! Tell me a fun fact.' }
-                        }
+                        arguments: { PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'Hello! Tell me a fun fact.' } }
                     },
                     {
                         opcode: 'sendChatMessage',
                         blockType: Scratch.BlockType.REPORTER,
-                        text: 'chat with AI memory [PROMPT]',
-                        arguments: {
-                            PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'What was my last question?' }
-                        }
+                        text: 'chat with selected bot memory [PROMPT]',
+                        arguments: { PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'What items do you sell?' } }
                     },
                     {
                         opcode: 'clearChatHistory',
                         blockType: Scratch.BlockType.COMMAND,
-                        text: 'clear chat memory'
+                        text: 'clear current chatbot memory'
+                    },
+
+                    // --- 🕹️ SUX MODEL (LEGACY / MADE BY ME) ---
+                    '---',
+                    '🕹️ Sux Model (Legacy / Made by me)',
+                    {
+                        opcode: 'suxTrain',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'Sux (legacy/Made by me) train on corpus [TEXT]',
+                        arguments: { TEXT: { type: Scratch.ArgumentType.STRING, defaultValue: 'apple banana orange apple grape' } }
                     },
                     {
-                        opcode: 'setChatMemoryLimit',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'set chat memory limit to [LIMIT] turns',
+                        opcode: 'suxRespond',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'Sux (legacy/Made by me) generate from prompt [PROMPT] max tokens [MAX]',
                         arguments: {
-                            LIMIT: { type: Scratch.ArgumentType.NUMBER, defaultValue: 10 }
+                            PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'apple' },
+                            MAX: { type: Scratch.ArgumentType.NUMBER, defaultValue: 10 }
                         }
                     },
                     {
-                        opcode: 'getChatHistoryLength',
+                        opcode: 'suxDescribe',
                         blockType: Scratch.BlockType.REPORTER,
-                        text: 'chat memory message count'
+                        text: 'Sux (legacy/Made by me) architecture description'
                     },
 
-                    // --- 🖼️ CATEGORY 4: IMAGE GENERATION MANAGEMENT ---
+                    // --- 🛠️ UTILITIES & DEBUGGING ---
                     '---',
-                    '🖼️ Image Generation Management',
-                    {
-                        opcode: 'generateImage',
-                        blockType: Scratch.BlockType.COMMAND,
-                        text: 'generate image from prompt [PROMPT]',
-                        arguments: {
-                            PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'A futuristic floating city pixel art' }
-                        }
-                    },
-                    {
-                        opcode: 'getLastImageUrl',
-                        blockType: Scratch.BlockType.REPORTER,
-                        text: 'last generated image URL',
-                        disableMonitor: true
-                    },
-
-                    // --- 🛠️ CATEGORY 5: MISCELLANEOUS & DEBUGGING ---
-                    '---',
-                    '🛠️ Miscellaneous',
+                    '🛠️ Utilities',
                     {
                         opcode: 'getLastError',
                         blockType: Scratch.BlockType.REPORTER,
-                        text: 'last error',
-                        disableMonitor: true
+                        text: 'last error'
                     },
                     {
                         opcode: 'getLatency',
                         blockType: Scratch.BlockType.REPORTER,
-                        text: 'last call latency (ms)'
+                        text: 'last latency (ms)'
                     },
                     {
                         opcode: 'getStatus',
                         blockType: Scratch.BlockType.REPORTER,
                         text: 'AI status'
-                    },
-                    {
-                        opcode: 'isReady',
-                        blockType: Scratch.BlockType.BOOLEAN,
-                        text: 'is API key set?'
                     }
                 ],
                 menus: {
                     providers: {
                         acceptReporters: true,
-                        items: ['Google Gemini', 'OpenAI']
+                        items: ['Google Gemini', 'OpenAI', 'OpenRouter (Llama/DeepSeek/Mistral)']
                     },
                     models: {
                         acceptReporters: true,
                         items: [
                             'gemini-3.5-flash',
-                            'gemini-3.6-flash',
                             'gemini-3.1-flash-lite',
                             'gpt-5.4-mini',
-                            'gpt-5.4'
-                        ]
-                    },
-                    personalityPresets: {
-                        acceptReporters: true,
-                        items: [
-                            'Friendly NPC',
-                            'Grumpy Shopkeeper',
-                            'Wise Mentor',
-                            'Sci-Fi AI Assistant',
-                            'Concise Assistant (Max 15 words)'
+                            'gpt-5.4',
+                            'meta-llama/llama-4-maverick',
+                            'meta-llama/llama-4-scout',
+                            'meta-llama/llama-3.3-70b-instruct',
+                            'deepseek/deepseek-v4-pro',
+                            'deepseek/deepseek-v4-flash',
+                            'deepseek/deepseek-r1',
+                            'mistralai/mistral-small-4',
+                            'mistralai/mistral-large-3'
                         ]
                     }
                 }
             };
         }
 
-        // ==========================================
-        // ⚙️ CONFIGURATION MANAGEMENT
-        // ==========================================
-        setApiKey(args) {
-            this.apiKey = Scratch.Cast.toString(args.KEY).trim();
-        }
+        // --- ⚙️ CONFIG & MULTI-BOT IMPLEMENTATION ---
+        setApiKey(args) { this.apiKey = Scratch.Cast.toString(args.KEY).trim(); }
+        setProvider(args) { this.provider = Scratch.Cast.toString(args.PROVIDER); }
+        setModel(args) { this.model = Scratch.Cast.toString(args.MODEL); }
+        setCustomModel(args) { this.model = Scratch.Cast.toString(args.MODEL_ID).trim(); }
+        getCurrentModel() { return this.model; }
+        setTemperature(args) { this.temperature = Math.max(0, Math.min(2, Scratch.Cast.toNumber(args.TEMP))); }
 
-        setProvider(args) {
-            this.provider = Scratch.Cast.toString(args.PROVIDER);
-        }
-
-        setModel(args) {
-            this.model = Scratch.Cast.toString(args.MODEL);
-        }
-
-        setCustomModel(args) {
-            this.model = Scratch.Cast.toString(args.MODEL_ID).trim();
-        }
-
-        setTemperature(args) {
-            let temp = Scratch.Cast.toNumber(args.TEMP);
-            this.temperature = Math.max(0, Math.min(2, temp));
-        }
-
-        setMaxTokens(args) {
-            let tokens = Scratch.Cast.toNumber(args.TOKENS);
-            this.maxTokens = Math.max(1, tokens);
-        }
-
-        // ==========================================
-        // 🎭 PERSONALITY MANAGEMENT
-        // ==========================================
-        setSystemPrompt(args) {
-            this.systemPrompt = Scratch.Cast.toString(args.PROMPT);
-        }
-
-        setPersonalityPreset(args) {
-            const preset = Scratch.Cast.toString(args.PRESET);
-            switch (preset) {
-                case 'Friendly NPC':
-                    this.systemPrompt = 'You are a cheerful and helpful NPC in a fantasy game world.';
-                    break;
-                case 'Grumpy Shopkeeper':
-                    this.systemPrompt = 'You are a grumpy shopkeeper. You sell goods but complain about prices and customers constantly. Keep responses blunt and brief.';
-                    break;
-                case 'Wise Mentor':
-                    this.systemPrompt = 'You are an ancient, wise wizard offering mystical guidance and advice to a young hero.';
-                    break;
-                case 'Sci-Fi AI Assistant':
-                    this.systemPrompt = 'You are an advanced futuristic spaceship AI. Speak efficiently with tactical terminology.';
-                    break;
-                case 'Concise Assistant (Max 15 words)':
-                    this.systemPrompt = 'You are a helpful assistant. Crucial rule: Never respond with more than 15 words total.';
-                    break;
-                default:
-                    this.systemPrompt = 'You are a helpful assistant.';
+        createChatbot(args) {
+            const name = Scratch.Cast.toString(args.NAME).trim();
+            const prompt = Scratch.Cast.toString(args.PROMPT);
+            if (name) {
+                this._createChatbot(name, prompt);
+                this.currentChatbotId = name;
             }
         }
 
-        getSystemPrompt() {
-            return this.systemPrompt;
-        }
-
-        // ==========================================
-        // 💬 CHATBOT MANAGEMENT
-        // ==========================================
-        clearChatHistory() {
-            this.chatHistory = [];
-        }
-
-        setChatMemoryLimit(args) {
-            this.chatMemoryLimit = Math.max(2, Scratch.Cast.toNumber(args.LIMIT));
-        }
-
-        getChatHistoryLength() {
-            return this.chatHistory.length;
-        }
-
-        // Single isolated prompt (Original Block)
-        async generateResponse(args) {
-            const prompt = Scratch.Cast.toString(args.PROMPT);
-            return await this._executeRequest(prompt, false);
-        }
-
-        // Chat prompt with full conversation history
-        async sendChatMessage(args) {
-            const prompt = Scratch.Cast.toString(args.PROMPT);
-            return await this._executeRequest(prompt, true);
-        }
-
-        // ==========================================
-        // 🖼️ IMAGE GENERATION MANAGEMENT
-        // ==========================================
-        async generateImage(args) {
-            const prompt = Scratch.Cast.toString(args.PROMPT);
-            if (!this.apiKey) {
-                this.lastError = 'API Key is missing for Image Generation.';
-                return;
+        selectChatbot(args) {
+            const name = Scratch.Cast.toString(args.NAME).trim();
+            if (this.chatbots.has(name)) {
+                this.currentChatbotId = name;
+            } else {
+                this.lastError = `Chatbot "${name}" does not exist.`;
             }
+        }
 
-            this.status = 'Generating Image...';
-            const startTime = Date.now();
-
-            try {
-                if (this.provider === 'OpenAI') {
-                    const response = await Scratch.fetch('https://api.openai.com/v1/images/generations', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${this.apiKey}`
-                        },
-                        body: JSON.stringify({
-                            model: 'dall-e-3',
-                            prompt: prompt,
-                            n: 1,
-                            size: '1024x1024'
-                        })
-                    });
-
-                    if (!response.ok) {
-                        const errData = await response.json().catch(() => ({}));
-                        throw new Error(errData.error?.message || `HTTP ${response.status}`);
+        deleteChatbot(args) {
+            const name = Scratch.Cast.toString(args.NAME).trim();
+            if (this.chatbots.has(name)) {
+                this.chatbots.delete(name);
+                if (this.currentChatbotId === name) {
+                    const remainingKeys = Array.from(this.chatbots.keys());
+                    if (remainingKeys.length > 0) {
+                        this.currentChatbotId = remainingKeys[0];
+                    } else {
+                        this._createChatbot('Default', 'You are a helpful AI assistant.');
+                        this.currentChatbotId = 'Default';
                     }
-
-                    const data = await response.json();
-                    this.lastGeneratedImageUrl = data.data?.[0]?.url || '';
-                } else {
-                    // Gemini / Google Imagen call
-                    const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${this.apiKey}`;
-                    const response = await Scratch.fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            instances: [{ prompt: prompt }],
-                            parameters: { sampleCount: 1 }
-                        })
-                    });
-
-                    if (!response.ok) {
-                        const errData = await response.json().catch(() => ({}));
-                        throw new Error(errData.error?.message || `HTTP ${response.status}`);
-                    }
-
-                    const data = await response.json();
-                    const mimeType = data.predictions?.[0]?.mimeType || 'image/png';
-                    const base64 = data.predictions?.[0]?.bytesBase64Encoded || '';
-                    this.lastGeneratedImageUrl = `data:${mimeType};base64,${base64}`;
                 }
-
-                this.status = 'Idle';
-                this.lastResponseTimeMs = Date.now() - startTime;
-            } catch (err) {
-                this.lastError = err.message || String(err);
-                this.status = 'Error';
-                this.lastGeneratedImageUrl = '';
             }
         }
 
-        getLastImageUrl() {
-            return this.lastGeneratedImageUrl;
+        getCurrentChatbotName() { return this.currentChatbotId; }
+        getChatbotList() { return Array.from(this.chatbots.keys()).join(', '); }
+
+        setSystemPrompt(args) { this._getCurrentBot().systemPrompt = Scratch.Cast.toString(args.PROMPT); }
+        getSystemPrompt() { return this._getCurrentBot().systemPrompt; }
+        clearChatHistory() { this._getCurrentBot().chatHistory = []; }
+
+        // --- 🕹️ SUX (LEGACY / MADE BY ME) IMPLEMENTATION ---
+        suxTrain(args) {
+            const corpus = Scratch.Cast.toString(args.TEXT);
+            this.suxModel.train(corpus);
         }
 
-        // ==========================================
-        // 🛠️ MISCELLANEOUS & UTILITIES
-        // ==========================================
-        getLastError() {
-            return this.lastError;
+        suxRespond(args) {
+            const prompt = Scratch.Cast.toString(args.PROMPT);
+            const max = Scratch.Cast.toNumber(args.MAX);
+            return this.suxModel.respond(prompt, max);
         }
 
-        getLatency() {
-            return this.lastResponseTimeMs;
+        suxDescribe() {
+            return this.suxModel.describeArchitecture();
         }
 
-        getStatus() {
-            return this.status;
-        }
+        // --- 💬 CHATBOT INTERACTION EXECUTOR ---
+        async generateResponse(args) { return await this._executeRequest(Scratch.Cast.toString(args.PROMPT), false); }
+        async sendChatMessage(args) { return await this._executeRequest(Scratch.Cast.toString(args.PROMPT), true); }
 
-        isReady() {
-            return this.apiKey.length > 0;
-        }
+        getLastError() { return this.lastError; }
+        getLatency() { return this.lastLatency; }
+        getStatus() { return this.status; }
 
-        // ==========================================
-        // 🔒 PRIVATE NETWORK PIPELINE
-        // ==========================================
         async _executeRequest(userPrompt, useMemory) {
             if (!this.apiKey) {
                 this.lastError = 'API Key is missing.';
@@ -416,26 +487,27 @@
 
             this.status = 'Thinking...';
             const startTime = Date.now();
+            const bot = this._getCurrentBot();
 
             try {
                 let responseText = '';
                 if (this.provider === 'Google Gemini') {
-                    responseText = await this._callGemini(userPrompt, useMemory);
+                    responseText = await this._callGemini(userPrompt, useMemory, bot);
+                } else if (this.provider.includes('OpenRouter')) {
+                    responseText = await this._callOpenRouter(userPrompt, useMemory, bot);
                 } else {
-                    responseText = await this._callOpenAI(userPrompt, useMemory);
+                    responseText = await this._callOpenAI(userPrompt, useMemory, bot);
                 }
 
                 if (useMemory) {
-                    this.chatHistory.push({ role: 'user', content: userPrompt });
-                    this.chatHistory.push({ role: 'assistant', content: responseText });
-
-                    // Prune history to limit size
-                    while (this.chatHistory.length > this.chatMemoryLimit * 2) {
-                        this.chatHistory.shift();
+                    bot.chatHistory.push({ role: 'user', content: userPrompt });
+                    bot.chatHistory.push({ role: 'assistant', content: responseText });
+                    while (bot.chatHistory.length > bot.memoryLimit * 2) {
+                        bot.chatHistory.shift();
                     }
                 }
 
-                this.lastResponseTimeMs = Date.now() - startTime;
+                this.lastLatency = Date.now() - startTime;
                 this.status = 'Idle';
                 return responseText;
             } catch (err) {
@@ -445,45 +517,50 @@
             }
         }
 
-        async _callOpenAI(prompt, useMemory) {
+        async _callOpenAI(prompt, useMemory, bot) {
             const url = 'https://api.openai.com/v1/chat/completions';
-            
-            let messages = [{ role: 'system', content: this.systemPrompt }];
-            if (useMemory) {
-                messages = messages.concat(this.chatHistory);
-            }
+            let messages = [{ role: 'system', content: bot.systemPrompt }];
+            if (useMemory) messages = messages.concat(bot.chatHistory);
+            messages.push({ role: 'user', content: prompt });
+
+            const response = await Scratch.fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.apiKey}` },
+                body: JSON.stringify({ model: this.model, temperature: this.temperature, messages })
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error?.message || `HTTP ${response.status}`);
+            return data.choices?.[0]?.message?.content || '';
+        }
+
+        async _callOpenRouter(prompt, useMemory, bot) {
+            const url = 'https://openrouter.ai/api/v1/chat/completions';
+            let messages = [{ role: 'system', content: bot.systemPrompt }];
+            if (useMemory) messages = messages.concat(bot.chatHistory);
             messages.push({ role: 'user', content: prompt });
 
             const response = await Scratch.fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${this.apiKey}`
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'HTTP-Referer': 'https://turbowarp.org',
+                    'X-Title': 'OreAI Scratch Extension'
                 },
-                body: JSON.stringify({
-                    model: this.model,
-                    temperature: this.temperature,
-                    max_tokens: this.maxTokens,
-                    messages: messages
-                })
+                body: JSON.stringify({ model: this.model, temperature: this.temperature, messages })
             });
-
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                throw new Error(errData.error?.message || `HTTP ${response.status}`);
-            }
-
             const data = await response.json();
+            if (!response.ok) throw new Error(data.error?.message || `HTTP ${response.status}`);
             return data.choices?.[0]?.message?.content || '';
         }
 
-        async _callGemini(prompt, useMemory) {
+        async _callGemini(prompt, useMemory, bot) {
             const endpointModel = this.model.includes('gemini') ? this.model : 'gemini-3.5-flash';
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${endpointModel}:generateContent?key=${this.apiKey}`;
 
             let contents = [];
             if (useMemory) {
-                contents = this.chatHistory.map(item => ({
+                contents = bot.chatHistory.map(item => ({
                     role: item.role === 'assistant' ? 'model' : 'user',
                     parts: [{ text: item.content }]
                 }));
@@ -494,21 +571,13 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    systemInstruction: { parts: [{ text: this.systemPrompt }] },
-                    generationConfig: {
-                        temperature: this.temperature,
-                        maxOutputTokens: this.maxTokens
-                    },
-                    contents: contents
+                    systemInstruction: { parts: [{ text: bot.systemPrompt }] },
+                    generationConfig: { temperature: this.temperature },
+                    contents
                 })
             });
-
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                throw new Error(errData.error?.message || `HTTP ${response.status}`);
-            }
-
             const data = await response.json();
+            if (!response.ok) throw new Error(data.error?.message || `HTTP ${response.status}`);
             return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
         }
     }
