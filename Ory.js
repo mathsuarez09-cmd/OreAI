@@ -197,6 +197,13 @@
             this.suxModel = new Sux();
             this.suxModel.train("hello how are you I am a simple ai model that learns from example text i can predict the next words and return a response based on a prompt");
 
+            // v2.3 New Tracking Systems
+            this.maxMessagesPerWindow = 0; // 0 = unlimited
+            this.messageWindowMs = 2 * 60 * 60 * 1000; // Exactly 2 Hours
+            this.messageTimestamps = [];
+            this.totalMessagesSent = 0;
+            this.responseDelayMs = 0;
+
             // Utilities State
             this.lastGeneratedImageUrl = '';
             this.lastError = '';
@@ -208,7 +215,8 @@
             this.chatbots.set(name, {
                 systemPrompt: systemPrompt || 'You are a helpful assistant.',
                 chatHistory: [],
-                memoryLimit: 10
+                memoryLimit: 10,
+                isPreset: false
             });
         }
 
@@ -219,10 +227,24 @@
             return this.chatbots.get(this.currentChatbotId);
         }
 
+        _cleanMessageWindow() {
+            const now = Date.now();
+            this.messageTimestamps = this.messageTimestamps.filter(t => (now - t) < this.messageWindowMs);
+        }
+
+        _checkRateLimit() {
+            this._cleanMessageWindow();
+            if (this.maxMessagesPerWindow > 0 && this.messageTimestamps.length >= this.maxMessagesPerWindow) {
+                const oldestInWindow = this.messageTimestamps[0];
+                const waitTimeSec = Math.ceil((this.messageWindowMs - (Date.now() - oldestInWindow)) / 1000);
+                throw new Error(`Rate limit reached (${this.maxMessagesPerWindow} msgs/2hrs). Try again in ${waitTimeSec} seconds.`);
+            }
+        }
+
         getInfo() {
             return {
                 id: 'oreAI',
-                name: 'OreAI v2.2',
+                name: 'OreAI v2.3',
                 color1: '#7b2cbf',
                 color2: '#5a189a',
                 color3: '#3c096c',
@@ -264,6 +286,12 @@
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'set creativity (temperature) to [TEMP]',
                         arguments: { TEMP: { type: Scratch.ArgumentType.NUMBER, defaultValue: 0.7 } }
+                    },
+                    {
+                        opcode: 'setResponseDelay',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'set artificial response delay to [SECONDS] seconds',
+                        arguments: { SECONDS: { type: Scratch.ArgumentType.NUMBER, defaultValue: 1.0 } }
                     },
 
                     // --- 🤖 MULTI-CHATBOT MANAGEMENT ---
@@ -311,14 +339,25 @@
                         arguments: { PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'You are a helpful assistant.' } }
                     },
                     {
+                        opcode: 'setPersonalityPreset',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'apply personality preset [PRESET] to current chatbot',
+                        arguments: { PRESET: { type: Scratch.ArgumentType.STRING, menu: 'personalityPresets', defaultValue: 'Friendly NPC' } }
+                    },
+                    {
+                        opcode: 'isUsingPersonalityPreset',
+                        blockType: Scratch.BlockType.BOOLEAN,
+                        text: 'is current chatbot using personality preset?'
+                    },
+                    {
                         opcode: 'getSystemPrompt',
                         blockType: Scratch.BlockType.REPORTER,
                         text: 'current chatbot system prompt'
                     },
 
-                    // --- 💬 CHAT & GENERATION ---
+                    // --- 💬 CHAT & MEMORY INSPECTION ---
                     '---',
-                    '💬 Chat & Interaction',
+                    '💬 Chat & Memory',
                     {
                         opcode: 'generateResponse',
                         blockType: Scratch.BlockType.REPORTER,
@@ -332,9 +371,39 @@
                         arguments: { PROMPT: { type: Scratch.ArgumentType.STRING, defaultValue: 'What items do you sell?' } }
                     },
                     {
+                        opcode: 'getMemoryStorage',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'current chatbot memory storage (JSON)'
+                    },
+                    {
+                        opcode: 'getMemoryCount',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'current chatbot stored message count'
+                    },
+                    {
                         opcode: 'clearChatHistory',
                         blockType: Scratch.BlockType.COMMAND,
                         text: 'clear current chatbot memory'
+                    },
+
+                    // --- 🏢 CORPORATE MANAGEMENT ---
+                    '---',
+                    '🏢 Corporate Management',
+                    {
+                        opcode: 'setMaxMessagesPerWindow',
+                        blockType: Scratch.BlockType.COMMAND,
+                        text: 'set max messages allowed per 2 hours to [MAX]',
+                        arguments: { MAX: { type: Scratch.ArgumentType.NUMBER, defaultValue: 20 } }
+                    },
+                    {
+                        opcode: 'getMessagesSentCount',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'total messages sent'
+                    },
+                    {
+                        opcode: 'getMessagesIn2HourWindow',
+                        blockType: Scratch.BlockType.REPORTER,
+                        text: 'messages sent in current 2-hour window'
                     },
 
                     // --- 🕹️ SUX MODEL (LEGACY / MADE BY ME) ---
@@ -401,6 +470,16 @@
                             'mistralai/mistral-small-4',
                             'mistralai/mistral-large-3'
                         ]
+                    },
+                    personalityPresets: {
+                        acceptReporters: true,
+                        items: [
+                            'Friendly NPC',
+                            'Grumpy Shopkeeper',
+                            'Wise Mentor',
+                            'Sci-Fi AI Assistant',
+                            'Concise Assistant (Max 15 words)'
+                        ]
                     }
                 }
             };
@@ -413,6 +492,7 @@
         setCustomModel(args) { this.model = Scratch.Cast.toString(args.MODEL_ID).trim(); }
         getCurrentModel() { return this.model; }
         setTemperature(args) { this.temperature = Math.max(0, Math.min(2, Scratch.Cast.toNumber(args.TEMP))); }
+        setResponseDelay(args) { this.responseDelayMs = Math.max(0, Scratch.Cast.toNumber(args.SECONDS) * 1000); }
 
         createChatbot(args) {
             const name = Scratch.Cast.toString(args.NAME).trim();
@@ -451,9 +531,51 @@
         getCurrentChatbotName() { return this.currentChatbotId; }
         getChatbotList() { return Array.from(this.chatbots.keys()).join(', '); }
 
-        setSystemPrompt(args) { this._getCurrentBot().systemPrompt = Scratch.Cast.toString(args.PROMPT); }
+        // --- 🎭 PERSONALITY IMPLEMENTATION ---
+        setSystemPrompt(args) {
+            const bot = this._getCurrentBot();
+            bot.systemPrompt = Scratch.Cast.toString(args.PROMPT);
+            bot.isPreset = false;
+        }
+
+        setPersonalityPreset(args) {
+            const bot = this._getCurrentBot();
+            const preset = Scratch.Cast.toString(args.PRESET);
+            switch (preset) {
+                case 'Friendly NPC':
+                    bot.systemPrompt = 'You are a cheerful NPC in a fantasy RPG.';
+                    break;
+                case 'Grumpy Shopkeeper':
+                    bot.systemPrompt = 'You are a grumpy merchant who complains about customers and prices.';
+                    break;
+                case 'Wise Mentor':
+                    bot.systemPrompt = 'You are an ancient wizard giving mystical guidance.';
+                    break;
+                case 'Sci-Fi AI Assistant':
+                    bot.systemPrompt = 'You are a spaceship AI speaking with concise tactical terminology.';
+                    break;
+                case 'Concise Assistant (Max 15 words)':
+                    bot.systemPrompt = 'Helpful assistant. Rule: Never reply with more than 15 words.';
+                    break;
+            }
+            bot.isPreset = true;
+        }
+
+        isUsingPersonalityPreset() { return this._getCurrentBot().isPreset; }
         getSystemPrompt() { return this._getCurrentBot().systemPrompt; }
+
+        // --- 💬 MEMORY IMPLEMENTATION ---
+        getMemoryStorage() { return JSON.stringify(this._getCurrentBot().chatHistory); }
+        getMemoryCount() { return this._getCurrentBot().chatHistory.length; }
         clearChatHistory() { this._getCurrentBot().chatHistory = []; }
+
+        // --- 🏢 CORPORATE MANAGEMENT IMPLEMENTATION ---
+        setMaxMessagesPerWindow(args) { this.maxMessagesPerWindow = Math.max(0, Scratch.Cast.toNumber(args.MAX)); }
+        getMessagesSentCount() { return this.totalMessagesSent; }
+        getMessagesIn2HourWindow() {
+            this._cleanMessageWindow();
+            return this.messageTimestamps.length;
+        }
 
         // --- 🕹️ SUX (LEGACY / MADE BY ME) IMPLEMENTATION ---
         suxTrain(args) {
@@ -467,9 +589,7 @@
             return this.suxModel.respond(prompt, max);
         }
 
-        suxDescribe() {
-            return this.suxModel.describeArchitecture();
-        }
+        suxDescribe() { return this.suxModel.describeArchitecture(); }
 
         // --- 💬 CHATBOT INTERACTION EXECUTOR ---
         async generateResponse(args) { return await this._executeRequest(Scratch.Cast.toString(args.PROMPT), false); }
@@ -485,11 +605,22 @@
                 return 'Error: API Key is missing.';
             }
 
+            try {
+                this._checkRateLimit();
+            } catch (limitErr) {
+                this.lastError = limitErr.message;
+                return `Error: ${this.lastError}`;
+            }
+
             this.status = 'Thinking...';
             const startTime = Date.now();
             const bot = this._getCurrentBot();
 
             try {
+                if (this.responseDelayMs > 0) {
+                    await new Promise(resolve => setTimeout(resolve, this.responseDelayMs));
+                }
+
                 let responseText = '';
                 if (this.provider === 'Google Gemini') {
                     responseText = await this._callGemini(userPrompt, useMemory, bot);
@@ -506,6 +637,10 @@
                         bot.chatHistory.shift();
                     }
                 }
+
+                // Log message for 2-hour window and total stats
+                this.messageTimestamps.push(Date.now());
+                this.totalMessagesSent++;
 
                 this.lastLatency = Date.now() - startTime;
                 this.status = 'Idle';
